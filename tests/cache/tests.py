@@ -4,7 +4,6 @@ import copy
 import io
 import os
 import pickle
-import re
 import shutil
 import sys
 import tempfile
@@ -41,7 +40,8 @@ from django.test import (
 from django.test.signals import setting_changed
 from django.utils import timezone, translation
 from django.utils.cache import (
-    get_cache_key, learn_cache_key, patch_cache_control, patch_vary_headers,
+    cc_delim_re, get_cache_key, has_vary_header, learn_cache_key,
+    patch_cache_control, patch_vary_headers,
 )
 from django.utils.deprecation import RemovedInDjango41Warning
 from django.views.decorators.cache import cache_control, cache_page
@@ -1924,8 +1924,6 @@ class CacheUtils(SimpleTestCase):
             ('must-revalidate,max-age=60', {'public': True}, {'must-revalidate', 'max-age=60', 'public'}),
         )
 
-        cc_delim_re = re.compile(r'\s*,\s*')
-
         for initial_cc, newheaders, expected_cc in tests:
             with self.subTest(initial_cc=initial_cc, newheaders=newheaders):
                 response = HttpResponse()
@@ -1934,6 +1932,31 @@ class CacheUtils(SimpleTestCase):
                 patch_cache_control(response, **newheaders)
                 parts = set(cc_delim_re.split(response.headers['Cache-Control']))
                 self.assertEqual(parts, expected_cc)
+
+    def test_has_vary_header(self):
+        tests = [
+            ("*", "*", True),
+            ("Cookie, *", "*", True),
+            ("Cookie,*", "*", True),
+            ("Cookie , *", "*", True),
+            # Surronding whitespace on values must be stripped independently of
+            # the comma delimiter.
+            ("* ", "*", True),
+            (" *", "*", True),
+            ("Cookie, * ", "*", True),
+            (" Cookie", "Cookie", True),
+            ("Cookie", "*", False),
+            ("*", "Cookie", False),
+            ("cookie", "Cookie", True),
+            ("Cookie", "cookie", True),
+        ]
+
+        for header_value, header_query, has_match in tests:
+            with self.subTest(header_value=header_value, header_query=header_query):
+                response = HttpResponse()
+                response.headers["Vary"] = header_value
+
+                self.assertIs(has_vary_header(response, header_query), has_match)
 
 
 @override_settings(
